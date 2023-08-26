@@ -37,7 +37,7 @@ parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial 
 parser.add_argument('--weight_decay', type=float, default=0, help='Optimization L2 weight decay [default: 0]')
 parser.add_argument('--bn_decay_step', type=int, default=20, help='Period of BN decay (in epochs) [default: 20]')
 parser.add_argument('--bn_decay_rate', type=float, default=0.5, help='Decay rate for BN decay [default: 0.5]')
-parser.add_argument('--lr_decay_steps', default='80,120,160', help='When to decay the learning rate (in epochs) [default: 80,120,160]')
+parser.add_argument('--lr_decay_steps', default='40,80,120', help='When to decay the learning rate (in epochs) [default: 80,120,160]')
 parser.add_argument('--lr_decay_rates', default='0.1,0.1,0.1', help='Decay rates for lr decay [default: 0.1,0.1,0.1]')
 parser.add_argument('--overwrite', action='store_true', help='Overwrite existing log and dump folders.')
 parser.add_argument('--dump_results', action='store_true', help='Dump results.')
@@ -169,10 +169,11 @@ def train_one_epoch():
     bnm_scheduler.step() # decay BN momentum
     net.train() # set model to training mode
     for batch_idx, batch_data_label in enumerate(TRAIN_DATALOADER):  # iteration (4000/8=500)
+
         # 返回了 8 组样本数据
         for key in batch_data_label:
             batch_data_label[key] = batch_data_label[key].to(device)
-
+    
         # Forward pass
         optimizer.zero_grad()
         inputs = {'point_clouds': batch_data_label['point_clouds']}
@@ -327,7 +328,7 @@ def train(start_epoch):
     global EPOCH_CNT 
     min_loss = 1e10
     loss = 0
-    evaluate_one_epoch()
+    # evaluate_one_epoch()
     for epoch in range(start_epoch, MAX_EPOCH):
         EPOCH_CNT = epoch
         log_string('**** EPOCH %03d ****' % (epoch))

@@ -18,10 +18,13 @@ sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 sys.path.append(os.path.join(ROOT_DIR, 'models'))
 from ap_helper import parse_predictions
 from pc_util import random_sampling, read_ply, write_ply
+from my_util import softmax
 from synthetic_dataset import DC  # dataset config
 import data_config
+import open3d as o3d
 from autolab_core import Logger, RigidTransform
 from scipy.spatial.transform import Rotation as R
+from scipy import optimize
 
 
 LOG_FOUT = open(os.path.join(BASE_DIR, 'data/data_demo/results/log_train.txt'), 'a')
@@ -31,20 +34,38 @@ def log_string(out_str):
     print(out_str)
 
 def preprocess_point_cloud(point_cloud):
-    ''' Prepare the numpy point cloud (N,3) for forward pass '''
-    point_cloud = point_cloud[:,0:3]
+    ''' Prepare the numpy point cloud (N,6) for forward pass '''
+    point_cloud = point_cloud
 
-    # floor_height = np.percentile(point_cloud[:,2],0.99)
-    # height = point_cloud[:,2] - floor_height
-    # point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)],1)  # (N,4)
+    if (point_cloud.shape[1]==3):
+        normal = get_normal(point_cloud)
+        point_cloud = np.concatenate((point_cloud, normal), axis=1)
 
-    pcd_num = 2000
-    assert(pcd_num <= point_cloud.shape[0]), "point cloud size error!"
-    choice = np.random.choice(point_cloud.shape[0], pcd_num, replace=False)
-    point_cloud = point_cloud[choice, :]
+    pcd_num = 7000
+    if point_cloud.shape[0] >= pcd_num:
+        choice = np.random.choice(point_cloud.shape[0], pcd_num, replace=False)
+        point_cloud = point_cloud[choice, :]
+    else:
+        choice = np.array([i for i in range(point_cloud.shape[0])])
+        choice = np.pad(choice, (0, pcd_num-len(choice)), 'wrap')
+        point_cloud = point_cloud[choice, :]
 
-    pc = np.expand_dims(point_cloud.astype(np.float32), 0)  # (1,num_points,3)
+    pc = np.expand_dims(point_cloud.astype(np.float32), 0)  # (1,num_points,6)
     return pc
+
+def get_normal(cld):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(cld)
+    pcd.estimate_normals()
+    pcd.orient_normals_consistent_tangent_plane(100)
+    n = np.asarray(pcd.normals)
+    return n
+
+def fun(x, rmin, theta_min):
+    # 点的极坐标，theta_min: [0,pi/2]; theta_min-x: [-pi/2,pi/2]
+    v = np.sum(((theta_min-x)>0)*((rmin*np.cos(theta_min-x)-np.sqrt(2)/2)**2+(rmin*np.sin(theta_min-x)-np.sqrt(2)/2)**2), axis=0) + \
+        np.sum(((theta_min-x)<0)*((rmin*np.cos(theta_min-x)-np.sqrt(2)/2)**2+(rmin*np.sin(theta_min-x)+np.sqrt(2)/2)**2), axis=0)
+    return v
 
 if __name__=='__main__':
 
@@ -56,22 +77,19 @@ if __name__=='__main__':
         for x in os.listdir(os.path.join(demo_dir, 'ply'))])))
     gt_data = np.loadtxt(demo_dir + '/end_pose_ref.log')
 
-    eval_config_dict = {'conf_thresh': 0.0005, 'dataset_config': DC}
-
     # Init the model and optimzier
     MODEL = importlib.import_module('votenet')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(torch.cuda.device_count())
-    net = MODEL.VoteNet(num_proposal=32, input_feature_dim=0,
-        sampling='random', num_heading_bin=DC.num_heading_bin)
+    net = MODEL.VoteNet(input_feature_dim=3,
+               num_points=7000,
+               sampling='random')
     net.to(device)
     print('Constructed model.')
     
     # Load checkpoint
-    optimizer = optim.Adam(net.parameters(), lr=0.001)
     checkpoint = torch.load(checkpoint_path)
     net.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     epoch = checkpoint['epoch']
     print("Loaded checkpoint %s (epoch: %d)"%(checkpoint_path, epoch))
     net.eval()  # eval model will lead to bad predict, don't know why
@@ -104,51 +122,80 @@ if __name__=='__main__':
 
         # Load and preprocess input point cloud
         point_cloud = read_ply(demo_dir+'/ply/'+scan_name+'.ply')
-        # point_cloud = np.load(demo_dir + '/000950_pc.npz')['pc']
+        # point_cloud = np.load(demo_dir + '/ply/' +  scan_name + '_pc.npz')['pc']
         pc = preprocess_point_cloud(point_cloud)
+        assert(pc.shape[2]==6)
         print('Loaded point cloud data: %s'%(scan_name))
     
         # Model inference
         inputs = {'point_clouds': torch.from_numpy(pc).to(device)}
-        # tic = time.time()
         with torch.no_grad():
             end_points = net(inputs)
-        # toc = time.time()
-        # print('Inference time: %f'%(toc-tic))
-        pred_map_cls = parse_predictions(end_points, eval_config_dict)  # prob,x,y,z,euler
-        # print('Finished detection. %d object detected.'%(len(pred_map_cls[0])))
-    
-        # dump_dir = os.path.join(demo_dir, 'results/endo_%d'%dir_list[i])
-        # if not os.path.exists(dump_dir): os.mkdir(dump_dir)
-        # MODEL.dump_results(end_points, dump_dir, DC)
-        # boxPoints = get_3d_box(DC.box_size, pred_map_cls[0][0][2][3], pred_map_cls[0][0][2][:3])
-        # write_ply(boxPoints, os.path.join(dump_dir, 'bbox.ply'))
-        # print('Dumped detection results to folder %s'%(dump_dir))
+        
+        # write key points and label points
+        obj_threshold = 0.99
+        pred_ofsts = end_points['pred_kp_of']  # 1,2,7k,3
+        obj_prob = softmax(end_points['pred_seg'].detach().cpu().numpy())[0,:,1]  # 1,7k,2 -> 7k,
+        pred_ofsts = pred_ofsts[:,:,:,:].cpu().numpy()
+        pred_z = pred_ofsts[0,0,np.where(obj_prob>obj_threshold),:].reshape(-1,3)  # N,3
+        pred_x = pred_ofsts[0,1,np.where(obj_prob>obj_threshold),:].reshape(-1,3)  # N,3
+
+        dump_dir = os.path.join(demo_dir, 'results/' + scan_name)
+        if not os.path.exists(dump_dir):
+            os.mkdir(dump_dir)
+        write_ply(pred_z, os.path.join(dump_dir, 'z.ply'))
+        write_ply(pred_x, os.path.join(dump_dir, 'x.ply'))
+        write_ply(pc[0,np.where(obj_prob>obj_threshold),0:3].reshape(-1,3), os.path.join(dump_dir, 'raw.ply'))
 
         # 计算误差
-        position_error = np.sqrt(np.sum((pose_gt.translation-pred_map_cls[0][0][1][0:3])*(pose_gt.translation-pred_map_cls[0][0][1][0:3])))
-        R_predict = R.from_euler('XYZ', pred_map_cls[0][0][1][3:6]).as_matrix()
         R_gt = pose_gt.rotation
-        z_predict = R_predict[:,2]
         z_gt = R_gt[:,2]
-        z_error = np.degrees(np.arccos(np.dot(z_predict, z_gt)))
-        x_predict = R_predict[:,0]
         x_gt = R_gt[:,0]
-        x_error = np.degrees(np.arccos(np.dot(x_predict, x_gt)))
-        print(R.from_euler('XYZ', pred_map_cls[0][0][1][3:6]).as_euler('xyz',degrees=True))
-
+        # 半径滤波
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pred_x)
+        _, filtIndex = pcd.remove_radius_outlier(nb_points=100,radius=0.05)  # 100 or 10?
+        filtpcd = pcd.select_by_index(filtIndex)
+        # 拟合正方形
+        points = np.array(filtpcd.points)
+        norm = z_gt
+        z_new = np.array([0,0,1])-norm[2]*norm
+        z_new = z_new / np.linalg.norm(z_new)
+        y_new = norm
+        x_new = np.cross(y_new,z_new)
+        x_new = x_new / np.linalg.norm(x_new)
+        Projection = np.dot(np.array([[0,0,1],[1,0,0]]), np.concatenate([x_new.reshape(1,3),y_new.reshape(1,3),z_new.reshape(1,3)],axis=0))
+        projpcd = np.dot(Projection,points.T).T
+        rmin = np.sqrt(np.sum(projpcd*projpcd, axis=1))
+        theta_min = np.arctan2(projpcd[:,1], projpcd[:,0])  # [-pi,pi]
+        theta_min = theta_min - (theta_min>np.pi/2)*np.pi/2
+        theta_min = theta_min + (theta_min<0)*np.pi/2
+        theta_min = theta_min + (theta_min<0)*np.pi/2  # [0,pi/2]
+        res = optimize.minimize_scalar(fun, args=(rmin,theta_min), bounds=(0,np.pi/2), method='bounded')
+        # 计算误差
+        u_predict1 = np.cos(res.x-np.pi/4)  # [-pi/4,pi/4]
+        v_predict1 = np.sin(res.x-np.pi/4)
+        x_predict1 = z_new*u_predict1 + x_new*v_predict1
+        x_error1 = np.degrees(np.arccos(np.dot(x_predict1, x_gt)))
+        u_predict2 = np.cos(res.x+np.pi/4)  # [pi/4,3*pi/4]
+        v_predict2 = np.sin(res.x+np.pi/4)
+        x_predict2 = z_new*u_predict2 + x_new*v_predict2
+        x_error2 = np.degrees(np.arccos(np.dot(x_predict2, x_gt)))
+        u_predict3 = np.cos(res.x-3*np.pi/4)  # [-3*pi/4,-pi/4]
+        v_predict3 = np.sin(res.x-3*np.pi/4)
+        x_predict3 = z_new*u_predict3 + x_new*v_predict3
+        x_error3 = np.degrees(np.arccos(np.dot(x_predict3, x_gt)))
+        u_predict4 = np.cos(res.x+3*np.pi/4)  # [-5*pi/4,-3*pi/4]
+        v_predict4 = np.sin(res.x+3*np.pi/4)
+        x_predict4 = z_new*u_predict4 + x_new*v_predict4
+        x_error4 = np.degrees(np.arccos(np.dot(x_predict4, x_gt)))
+        x_error = np.min([x_error1,x_error2,x_error3,x_error4])
         
-        if len(pred_map_cls[0]) > 0:
-            # error[i][0] = abs(pose_gt.translation[0]-pred_map_cls[0][0][1][0])
-            # error[i][1] = abs(pose_gt.translation[1]-pred_map_cls[0][0][1][1])
-            # error[i][2] = abs(pose_gt.translation[2]-pred_map_cls[0][0][1][2])
-            # error[i][3] = position_error
-
-            error[i][0] = z_error
-            error[i][1] = x_error
-            log_string('position errror: %f'%(position_error))
-            log_string('z_axis error: %f'%(z_error))
-            log_string('x_axis error: %f'%(x_error))
+        # 保存结果
+        error[i][0] = 0
+        error[i][1] = x_error
+        log_string('z_axis error: %f'%(0))
+        log_string('x_axis error: %f'%(x_error))
     np.save('error.npy', error)
 
 

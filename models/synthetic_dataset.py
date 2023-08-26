@@ -8,7 +8,7 @@ Return heading class, heading residual for 3D bounding boxes.
 
 import os
 import sys
-import pcl
+import open3d as o3d
 import numpy as np
 from torch.utils.data import Dataset
 import scipy.io as sio  # to load .mat files for depth points
@@ -34,9 +34,9 @@ class SyntheticDataset(Dataset):
         self.augment = augment  # True
         self.num_points = num_points
 
-        self.box_l = 7.0          # z
-        self.box_halfw = 4.0/2.0  # x
-        self.box_halfh = 5.0/2.0  # y
+        # self.box_l = 7.0          # z
+        # self.box_halfw = 4.0/2.0  # x
+        # self.box_halfh = 5.0/2.0  # y
         
     def __len__(self):
         return len(self.scan_names)
@@ -54,18 +54,23 @@ class SyntheticDataset(Dataset):
             scan_idx: int scan index in scan_names list
         """
         scan_name = self.scan_names[idx]
-        # N,3 (x,y,z)
+        # N,9 (x,y,z,normal,gt_normal) 每个点云的位置与法向量，与 gt 绕 z 轴旋转量
         point_cloud = np.load(os.path.join(self.data_path, scan_name)+'_pc.npz')['pc']
+        assert(point_cloud.shape[1]==6)
         # 1,6 (x,y,z,euler) rad
         bboxes = np.load(os.path.join(self.data_path, scan_name)+'_bbox.npy')
+        assert(bboxes.shape[1]==6)
         # N,2 (bool,bool) bool1: is_innerpoint; bool2: used_in_loss
         point_votes = np.load(os.path.join(self.data_path, scan_name)+'_votes.npz')['point_votes']
+        assert(point_votes.shape[1]==2)
 
         # ------------------------------- DATA AUGMENTATION ------------------------------
         if self.augment:
             if np.random.random() > 0.5:
                 # Flipping along the YZ plane
                 point_cloud[:,0] = -1 * point_cloud[:,0]
+                point_cloud[:,3] = -1 * point_cloud[:,3]
+                point_cloud[:,6] = -1 * point_cloud[:,6]
                 bboxes[0,0] = -1 * bboxes[0,0]
 
                 R_bbox = R.from_euler('XYZ', bboxes[0][3:6]).as_matrix()
@@ -78,6 +83,8 @@ class SyntheticDataset(Dataset):
             if np.random.random() > 0.5:
                 # Flipping along the XZ plane
                 point_cloud[:,1] = -1 * point_cloud[:,1]
+                point_cloud[:,4] = -1 * point_cloud[:,4]
+                point_cloud[:,7] = -1 * point_cloud[:,7]
                 bboxes[0,1] = -1 * bboxes[0,1]
 
                 R_bbox = R.from_euler('XYZ', bboxes[0][3:6]).as_matrix()
@@ -92,6 +99,8 @@ class SyntheticDataset(Dataset):
             rot_mat = pc_util.rotz(rot_angle)
 
             point_cloud[:,0:3] = np.dot(point_cloud[:,0:3], np.transpose(rot_mat))
+            point_cloud[:,3:6] = np.dot(point_cloud[:,3:6], np.transpose(rot_mat))
+            point_cloud[:,6:9] = np.dot(point_cloud[:,6:9], np.transpose(rot_mat))
             bboxes[0,0:3] = np.dot(bboxes[0,0:3], np.transpose(rot_mat))
 
             R_bbox = R.from_euler('XYZ', bboxes[0][3:6]).as_matrix()
@@ -106,22 +115,17 @@ class SyntheticDataset(Dataset):
 
         # ----------------------------- 降采样 -------------------------------
 
-        # 计算法向量作为特征
-        pcd_feature = self.get_normal(point_cloud)[:, :3]  # N,3
-
         # 随机采样 7k 个点
         pcd_num = self.num_points
         if point_cloud.shape[0] >= pcd_num:
             choice = np.random.choice(point_cloud.shape[0], pcd_num, replace=False)
             point_cloud = point_cloud[choice, :]
             point_votes = point_votes[choice, :]
-            pcd_feature = pcd_feature[choice, :]
         else:
             choice = np.array([i for i in range(point_cloud.shape[0])])
             choice = np.pad(choice, (0, pcd_num-len(choice)), 'wrap')
             point_cloud = point_cloud[choice, :]
             point_votes = point_votes[choice, :]
-            pcd_feature = pcd_feature[choice, :]
 
         # ------------------------------- LABELS ------------------------------
         target_bboxes = np.zeros((1, 3))
@@ -130,23 +134,15 @@ class SyntheticDataset(Dataset):
         point_votes_mask = point_votes[:,0]       # bool (N,)
         point_votes_mask_mask = point_votes[:,1]  # bool (N,)
 
-        kpts_votes = np.zeros((8, pcd_num, 3))  # 8,N,3
-        R_base = R.from_euler('XYZ', bboxes[0,3:6]).as_matrix()
-        kpts_votes[0,:,:] = np.dot(np.array([self.box_halfw,-self.box_halfh,0.0]),R_base.T)+bboxes[0,0:3]-point_cloud
-        kpts_votes[1,:,:] = np.dot(np.array([self.box_halfw,self.box_halfh,0.0]),R_base.T)+bboxes[0,0:3]-point_cloud
-        kpts_votes[2,:,:] = np.dot(np.array([-self.box_halfw,self.box_halfh,0.0]),R_base.T)+bboxes[0,0:3]-point_cloud
-        kpts_votes[3,:,:] = np.dot(np.array([-self.box_halfw,-self.box_halfh,0.0]),R_base.T)+bboxes[0,0:3]-point_cloud
-        kpts_votes[4,:,:] = np.dot(np.array([self.box_halfw,-self.box_halfh,self.box_l]),R_base.T)+bboxes[0,0:3]-point_cloud
-        kpts_votes[5,:,:] = np.dot(np.array([self.box_halfw,self.box_halfh,self.box_l]),R_base.T)+bboxes[0,0:3]-point_cloud
-        kpts_votes[6,:,:] = np.dot(np.array([-self.box_halfw,self.box_halfh,self.box_l]),R_base.T)+bboxes[0,0:3]-point_cloud
-        kpts_votes[7,:,:] = np.dot(np.array([-self.box_halfw,-self.box_halfh,self.box_l]),R_base.T)+bboxes[0,0:3]-point_cloud
-
-        point_cloud = np.concatenate([point_cloud, pcd_feature],axis=1)  # N,6
+        dir_votes = np.zeros((1, pcd_num, 3))
+        dir_votes[0,:,:] = point_cloud[:,6:9]
 
         ret_dict = {}
-        ret_dict['point_clouds'] = point_cloud.astype(np.float32)
+        ret_dict['point_clouds'] = point_cloud.astype(np.float32)  # N,9
         ret_dict['center_label'] = target_bboxes.astype(np.float32)[:,0:3]
-        ret_dict['vote_label'] = kpts_votes.astype(np.float32)  # N,24
+        ret_dict['heading_class_label'] = angle_classes.astype(np.int64)
+        ret_dict['heading_residual_label'] = angle_residuals.astype(np.float32)
+        ret_dict['vote_label'] = dir_votes.astype(np.float32)  # 1,N,3
         ret_dict['vote_label_mask'] = point_votes_mask.astype(np.int64)  # N,
         ret_dict['vote_label_mask_mask'] = point_votes_mask_mask.astype(np.int64)  # N,
         ret_dict['scan_idx'] = np.array(idx).astype(np.int64)  # 场景 id 号
@@ -154,17 +150,7 @@ class SyntheticDataset(Dataset):
 
         return ret_dict
 
-    def get_normal(self, cld):
-        cloud = pcl.PointCloud()
-        cld = cld.astype(np.float32)
-        cloud.from_array(cld)
-        ne = cloud.make_NormalEstimation()
-        kdtree = cloud.make_kdtree()
-        ne.set_SearchMethod(kdtree)
-        ne.set_KSearch(50)
-        n = ne.compute()
-        n = n.to_array()
-        return n
+
 
 # def viz_votes(pc, point_votes, point_votes_mask):
 #     """ Visualize point votes and point votes mask labels

@@ -11,7 +11,7 @@ sys.path.append(ROOT_DIR)
 sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 sys.path.append(os.path.join(ROOT_DIR, 'pointnet2'))
 
-from pointnet2_modules import PointnetSAModuleVotes, PointnetFPModule
+from pointnet2_modules import PointnetSAModuleVotes, PointnetFPModule, PointnetSAModuleMSG
 
 class Pointnet2Backbone(nn.Module):
     r"""
@@ -30,7 +30,7 @@ class Pointnet2Backbone(nn.Module):
         use_xyz = True
 
         self.SA_modules = nn.ModuleList()
-        c_in = input_channels  # 3
+        c_in = input_feature_dim  # 3
         self.SA_modules.append(
             PointnetSAModuleMSG(
                 npoint=2048,
@@ -79,7 +79,7 @@ class Pointnet2Backbone(nn.Module):
         c_out_3 = 512 + 512
 
         self.FP_modules = nn.ModuleList()
-        self.FP_modules.append(PointnetFPModule(mlp=[256 + input_channels, 128, 128]))
+        self.FP_modules.append(PointnetFPModule(mlp=[256 + input_feature_dim, 128, 128]))
         self.FP_modules.append(PointnetFPModule(mlp=[512 + c_out_0, 256, 256]))
         self.FP_modules.append(PointnetFPModule(mlp=[512 + c_out_1, 512, 512]))
         self.FP_modules.append(PointnetFPModule(mlp=[c_out_3 + c_out_2, 512, 512]))

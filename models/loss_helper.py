@@ -26,8 +26,7 @@ def compute_objectness_loss(end_points):
     criterion = nn.CrossEntropyLoss(torch.Tensor(OBJECTNESS_CLS_WEIGHTS).cuda(), reduction='none')
     objectness_loss = criterion(objectness_scores.transpose(2,1), objectness_label)
     objectness_loss = torch.sum(objectness_loss * objectness_mask)/(torch.sum(objectness_mask)+1e-6)
-
-    return objectness_los
+    return objectness_loss
 
 def compute_box_loss(end_points):
     """ Compute 3D bounding box loss.
@@ -42,17 +41,18 @@ def compute_box_loss(end_points):
     """
 
     # 获取 kpts offset
-    kp_targ_ofst = end_points['vote_label'].contiguous()  # (B,8,N,3) offset
+    kp_targ_ofst = end_points['vote_label'].contiguous()  # (B,1,N,3)
     bs = kp_targ_ofst.shape[0]
+    kp_num = kp_targ_ofst.shape[1]
     n_pts = kp_targ_ofst.shape[2]
-    objectness_label = (end_points['vote_label_mask'] > 1e-8).float() # (B,N)
-    objectness_label = objectness_label.view(bs, 1, n_pts, 1).repeat(1, 8, 1, 1).contiguous()  # B,8,N,1
+    objectness_label = (end_points['vote_label_mask'] > 1e-8).float() # B,N
+    objectness_label = objectness_label.view(bs,1,n_pts,1).repeat(1,kp_num,1,1).contiguous()  # B,2,N,1
 
     # 计算 kpts loss
-    pred_ofsts = end_points['pred_kp_of']  # (B,8,N,3) offset
-    abs_diff = objectness_label * torch.abs(pred_ofsts - kp_targ_ofst)  # B,8,N,3
-    kpts_loss = torch.sum(abs_diff.view(bs,8,-1),2) / (torch.sum(objectness_label.view(bs,8,-1),2)+1e-3)
-
+    pred_ofsts = end_points['pred_kp_of']  # (B,1,N,3) offset
+    abs_diff = objectness_label * torch.abs(pred_ofsts - kp_targ_ofst)  # B,1,N,3
+    kpts_loss = torch.sum(abs_diff.view(bs,kp_num,-1),2) / (torch.sum(objectness_label.view(bs,kp_num,-1),2)+1e-3)
+    kpts_loss = kpts_loss.sum()
     return kpts_loss
 
 
@@ -68,14 +68,14 @@ def get_loss(end_points, config):
     """
 
     # Obj loss
-    objectness_loss, objectness_label = compute_objectness_loss(end_points)
+    objectness_loss = compute_objectness_loss(end_points)
+    objectness_loss *= 30
     end_points['objectness_loss'] = objectness_loss
 
     kpts_loss = compute_box_loss(end_points)
     end_points['kpts_loss'] = kpts_loss
     
-    loss = objectness_loss*2.0 + kpts_loss*1.0
-    loss *= 10
+    loss = objectness_loss + kpts_loss
     end_points['loss'] = loss
 
     # --------------------------------------------

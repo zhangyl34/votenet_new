@@ -26,6 +26,7 @@ from pytorch_utils import (
     Conv3d,
     FC,
 )
+import torch.nn.functional as F
 
 class Seq(nn.Sequential):
     def __init__(self, input_channels):
@@ -39,14 +40,14 @@ class Seq(nn.Sequential):
         kernel_size=1,
         stride=1,
         padding=0,
-        dilation=1,
+        # dilation=1,
         activation=nn.ReLU(inplace=True),
         bn=False,
         init=nn.init.kaiming_normal_,
         bias=True,
         preact=False,
         name="",
-        norm_layer=BatchNorm1d,
+        # norm_layer=BatchNorm1d,
     ):
         # type: (Seq, int, int, int, int, int, Any, bool, Any, bool, bool, AnyStr) -> Seq
 
@@ -58,14 +59,14 @@ class Seq(nn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 padding=padding,
-                dilation=dilation,
+                # dilation=dilation,
                 activation=activation,
                 bn=bn,
                 init=init,
                 bias=bias,
                 preact=preact,
                 name=name,
-                norm_layer=norm_layer,
+                # norm_layer=norm_layer,
             ),
         )
         self.count += 1
@@ -79,14 +80,14 @@ class Seq(nn.Sequential):
         kernel_size=(1, 1),
         stride=(1, 1),
         padding=(0, 0),
-        dilation=(1, 1),
+        # dilation=(1, 1),
         activation=nn.ReLU(inplace=True),
         bn=False,
         init=nn.init.kaiming_normal_,
         bias=True,
         preact=False,
         name="",
-        norm_layer=BatchNorm2d,
+        # norm_layer=BatchNorm2d,
     ):
         # type: (Seq, int, Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int], Any, bool, Any, bool, bool, AnyStr) -> Seq
 
@@ -98,14 +99,14 @@ class Seq(nn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 padding=padding,
-                dilation=dilation,
+                # dilation=dilation,
                 activation=activation,
                 bn=bn,
                 init=init,
                 bias=bias,
                 preact=preact,
                 name=name,
-                norm_layer=norm_layer,
+                # norm_layer=norm_layer,
             ),
         )
         self.count += 1
@@ -119,14 +120,14 @@ class Seq(nn.Sequential):
         kernel_size=(1, 1, 1),
         stride=(1, 1, 1),
         padding=(0, 0, 0),
-        dilation=(1, 1, 1),
+        # dilation=(1, 1, 1),
         activation=nn.ReLU(inplace=True),
         bn=False,
         init=nn.init.kaiming_normal_,
         bias=True,
         preact=False,
         name="",
-        norm_layer=BatchNorm3d,
+        # norm_layer=BatchNorm3d,
     ):
         # type: (Seq, int, Tuple[int, int], Tuple[int, int, int], Tuple[int, int, int], Tuple[int, int, int], Any, bool, Any, bool, bool, AnyStr) -> Seq
 
@@ -138,14 +139,14 @@ class Seq(nn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 padding=padding,
-                dilation=dilation,
+                # dilation=dilation,
                 activation=activation,
                 bn=bn,
                 init=init,
                 bias=bias,
                 preact=preact,
                 name=name,
-                norm_layer=norm_layer,
+                # norm_layer=norm_layer,
             ),
         )
         self.count += 1
@@ -215,7 +216,7 @@ class Seq(nn.Sequential):
 
 class Deeperception(nn.Module):
     def __init__(self, num_points):
-        super(Deeperception(num_points), self).__init__()
+        super().__init__()
         self.conv2_cld = torch.nn.Conv1d(128, 256, 1)
 
         self.conv3 = torch.nn.Conv1d(128, 256, 1)
@@ -263,7 +264,7 @@ class VoteNet(nn.Module):
         self.input_feature_dim = input_feature_dim  # 3
         self.num_points = num_points                # 7000
         self.sampling = sampling                    # random
-        self.num_kps = 8
+        self.num_kps = 1
 
         # Backbone point feature learning
         self.backbone_net = Pointnet2Backbone(input_feature_dim=self.input_feature_dim)
@@ -274,15 +275,15 @@ class VoteNet(nn.Module):
         # segmentation
         self.SEG_layer = (
             Seq(896)
-            .conv1d(1024, bn=True, activation=nn.ReLU())
+            # .conv1d(1024, bn=True, activation=nn.ReLU())
             .conv1d(512, bn=True, activation=nn.ReLU())
             .conv1d(128, bn=True, activation=nn.ReLU())
             .conv1d(2, activation=None)
         )
 
         self.KpOF_layer = (
-            pt_utils.Seq(896)
-            .conv1d(1024, bn=True, activation=nn.ReLU())
+            Seq(896)
+            # .conv1d(1024, bn=True, activation=nn.ReLU())
             .conv1d(512, bn=True, activation=nn.ReLU())
             .conv1d(256, bn=True, activation=nn.ReLU())
             .conv1d(self.num_kps*3, activation=None)
@@ -312,7 +313,7 @@ class VoteNet(nn.Module):
         end_points = {}
         batch_size = inputs['point_clouds'].shape[0]
 
-        end_points = self.backbone_net(inputs['point_clouds'], inputs['pcd_normal'], end_points)
+        end_points = self.backbone_net(inputs['point_clouds'], end_points)
 
         end_points = self.deeper_feat(end_points)  # B,896,N
 
@@ -321,8 +322,8 @@ class VoteNet(nn.Module):
         end_points['pred_seg'] = pred_seg
 
         # key points prediction
-        pred_kp_of = self.KpOF_layer(end_points['deeper_features']).view(batch_size, self.num_kps, 3, N)
-        pred_kp_of = pred_kp_of.permute(0, 1, 3, 2).contiguous()  # B,8,N,3
+        pred_kp_of = self.KpOF_layer(end_points['deeper_features']).view(batch_size, self.num_kps, 3, self.num_points)
+        pred_kp_of = pred_kp_of.permute(0, 1, 3, 2).contiguous()  # B,1,N,3
         end_points['pred_kp_of'] = pred_kp_of
 
         return end_points
