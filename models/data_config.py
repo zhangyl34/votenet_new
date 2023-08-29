@@ -10,7 +10,7 @@ sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 
 class DatasetConfig(object):
     def __init__(self):
-        self.num_heading_bin = 12     # 每个 bin 30 度
+        self.num_heading_bin = 24     # 每个 bin 15 度
     
     def angle2class(self, angle):
         ''' Convert continuous angle to discrete class

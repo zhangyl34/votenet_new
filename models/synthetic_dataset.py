@@ -56,7 +56,7 @@ class SyntheticDataset(Dataset):
         scan_name = self.scan_names[idx]
         # N,9 (x,y,z,normal,gt_normal) 每个点云的位置与法向量，与 gt 绕 z 轴旋转量
         point_cloud = np.load(os.path.join(self.data_path, scan_name)+'_pc.npz')['pc']
-        assert(point_cloud.shape[1]==6)
+        assert(point_cloud.shape[1]==9)
         # 1,6 (x,y,z,euler) rad
         bboxes = np.load(os.path.join(self.data_path, scan_name)+'_bbox.npy')
         assert(bboxes.shape[1]==6)
@@ -134,15 +134,18 @@ class SyntheticDataset(Dataset):
         point_votes_mask = point_votes[:,0]       # bool (N,)
         point_votes_mask_mask = point_votes[:,1]  # bool (N,)
 
-        dir_votes = np.zeros((1, pcd_num, 3))
-        dir_votes[0,:,:] = point_cloud[:,6:9]
+        dir_votes = np.zeros((2, pcd_num, 3))
+        dir_matrix = R.from_euler('XYZ', bboxes[0,3:6]).as_matrix()
+        dir_votes[0,:,:] = dir_matrix[:,2]     # z
+        dir_votes[1,:,:] = point_cloud[:,6:9]  # x,y
+        point_cloud = point_cloud[:,0:6]
 
         ret_dict = {}
-        ret_dict['point_clouds'] = point_cloud.astype(np.float32)  # N,9
+        ret_dict['point_clouds'] = point_cloud.astype(np.float32)  # N,6
         ret_dict['center_label'] = target_bboxes.astype(np.float32)[:,0:3]
-        ret_dict['heading_class_label'] = angle_classes.astype(np.int64)
-        ret_dict['heading_residual_label'] = angle_residuals.astype(np.float32)
-        ret_dict['vote_label'] = dir_votes.astype(np.float32)  # 1,N,3
+        # ret_dict['heading_class_label'] = angle_classes.astype(np.int64)
+        # ret_dict['heading_residual_label'] = angle_residuals.astype(np.float32)
+        ret_dict['vote_label'] = dir_votes.astype(np.float32)  # 2,N,3
         ret_dict['vote_label_mask'] = point_votes_mask.astype(np.int64)  # N,
         ret_dict['vote_label_mask_mask'] = point_votes_mask_mask.astype(np.int64)  # N,
         ret_dict['scan_idx'] = np.array(idx).astype(np.int64)  # 场景 id 号

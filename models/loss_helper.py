@@ -41,16 +41,16 @@ def compute_box_loss(end_points):
     """
 
     # 获取 kpts offset
-    kp_targ_ofst = end_points['vote_label'].contiguous()  # (B,1,N,3)
+    kp_targ_ofst = end_points['vote_label'].contiguous()  # (B,kp,N,3)
     bs = kp_targ_ofst.shape[0]
     kp_num = kp_targ_ofst.shape[1]
     n_pts = kp_targ_ofst.shape[2]
     objectness_label = (end_points['vote_label_mask'] > 1e-8).float() # B,N
-    objectness_label = objectness_label.view(bs,1,n_pts,1).repeat(1,kp_num,1,1).contiguous()  # B,2,N,1
+    objectness_label = objectness_label.view(bs,1,n_pts,1).repeat(1,kp_num,1,1).contiguous()  # B,kp,N,1
 
     # 计算 kpts loss
-    pred_ofsts = end_points['pred_kp_of']  # (B,1,N,3) offset
-    abs_diff = objectness_label * torch.abs(pred_ofsts - kp_targ_ofst)  # B,1,N,3
+    pred_ofsts = end_points['pred_kp_of']  # (B,kp,N,3) offset
+    abs_diff = objectness_label * torch.abs(pred_ofsts - kp_targ_ofst)  # B,kp,N,3
     kpts_loss = torch.sum(abs_diff.view(bs,kp_num,-1),2) / (torch.sum(objectness_label.view(bs,kp_num,-1),2)+1e-3)
     kpts_loss = kpts_loss.sum()
     return kpts_loss

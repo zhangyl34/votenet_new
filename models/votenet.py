@@ -264,7 +264,7 @@ class VoteNet(nn.Module):
         self.input_feature_dim = input_feature_dim  # 3
         self.num_points = num_points                # 7000
         self.sampling = sampling                    # random
-        self.num_kps = 1
+        self.num_kps = 2
 
         # Backbone point feature learning
         self.backbone_net = Pointnet2Backbone(input_feature_dim=self.input_feature_dim)
@@ -323,7 +323,7 @@ class VoteNet(nn.Module):
 
         # key points prediction
         pred_kp_of = self.KpOF_layer(end_points['deeper_features']).view(batch_size, self.num_kps, 3, self.num_points)
-        pred_kp_of = pred_kp_of.permute(0, 1, 3, 2).contiguous()  # B,1,N,3
+        pred_kp_of = pred_kp_of.permute(0, 1, 3, 2).contiguous()  # B,kp,N,3
         end_points['pred_kp_of'] = pred_kp_of
 
         return end_points

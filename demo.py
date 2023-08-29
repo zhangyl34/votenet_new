@@ -33,12 +33,12 @@ def log_string(out_str):
     LOG_FOUT.flush()
     print(out_str)
 
-def preprocess_point_cloud(point_cloud):
+def preprocess_point_cloud(point_cloud, R_intuitive, t_intuitive):
     ''' Prepare the numpy point cloud (N,6) for forward pass '''
     point_cloud = point_cloud
 
     if (point_cloud.shape[1]==3):
-        normal = get_normal(point_cloud)
+        normal = get_normal(point_cloud, R_intuitive, t_intuitive)
         point_cloud = np.concatenate((point_cloud, normal), axis=1)
 
     pcd_num = 7000
@@ -53,12 +53,26 @@ def preprocess_point_cloud(point_cloud):
     pc = np.expand_dims(point_cloud.astype(np.float32), 0)  # (1,num_points,6)
     return pc
 
-def get_normal(cld):
+def get_normal(cld, R_intuitive, t_intuitive):
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(cld)
     pcd.estimate_normals()
     pcd.orient_normals_consistent_tangent_plane(100)
     n = np.asarray(pcd.normals)
+
+    # 每个点对 x 轴投票的真值
+    new_cld = np.dot(R_intuitive.T, cld.T-t_intuitive)  # 3,N
+    new_theta = np.arctan2(new_cld[1,:], new_cld[0,:])  # N,
+    new_normal = np.zeros((new_theta.shape[0], 3))
+    new_normal[np.where((new_theta<=np.pi/4)*(new_theta>-np.pi/4)),:] = np.array([1,0,0])
+    new_normal[np.where((new_theta<=3*np.pi/4)*(new_theta>np.pi/4)),:] = np.array([0,1,0])
+    new_normal[np.where((new_theta<=-np.pi/4)*(new_theta>-3*np.pi/4)),:] = -np.array([0,1,0])
+    new_normal[np.where((new_theta<=-3*np.pi/4)+(new_theta>3*np.pi/4)),:] = -np.array([1,0,0])
+    normal = np.dot(R_intuitive, new_normal.T)  # (3,N)
+
+    if (np.sum(np.sum(n*normal.T, axis=1))<0):
+        n = -n
+    
     return n
 
 def fun(x, rmin, theta_min):
@@ -123,7 +137,9 @@ if __name__=='__main__':
         # Load and preprocess input point cloud
         point_cloud = read_ply(demo_dir+'/ply/'+scan_name+'.ply')
         # point_cloud = np.load(demo_dir + '/ply/' +  scan_name + '_pc.npz')['pc']
-        pc = preprocess_point_cloud(point_cloud)
+        R_intuitive = R.from_matrix(pose_gt.rotation).as_matrix()
+        t_intuitive = pose_gt.translation.reshape(3,1)
+        pc = preprocess_point_cloud(point_cloud, R_intuitive, t_intuitive)
         assert(pc.shape[2]==6)
         print('Loaded point cloud data: %s'%(scan_name))
     
